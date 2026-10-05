@@ -8,6 +8,7 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -143,7 +144,12 @@ async def _run_search(
 
 @router.message(SearchStates.waiting_query)
 async def run_search(message: Message, session: AsyncSession, state: FSMContext, db_user: User) -> None:
+    from app.bot.handlers.menu import is_main_menu_button
+
     query = (message.text or "").strip()
+    if is_main_menu_button(query):
+        # Let handlers/menu.py handle bottom keyboard (should already win by order).
+        raise SkipHandler()
     await state.clear()
     if not query or query.startswith("/"):
         return

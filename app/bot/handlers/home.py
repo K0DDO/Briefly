@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -12,11 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.brand import send_banner
 from app.bot.i18n import (
     LANG_LABELS,
-    SUPPORTED_LANGS,
-    btn_feed,
-    btn_search,
-    btn_settings,
-    btn_trends,
     t,
 )
 from app.bot.keyboards import (
@@ -30,6 +26,7 @@ from app.bot.keyboards import (
     onboarding_tour_keyboard,
     onboarding_while_keyboard,
     privacy_keyboard,
+    settings_keyboard,
 )
 from app.bot.states import ChannelBulkStates
 from app.bot.ui import format_home, format_how_to_use, format_privacy
@@ -461,32 +458,4 @@ async def nav_search(
         await ask_search(callback.message, session, db_user, replace_from=callback.message)
 
 
-# Reply keyboard routing
-@router.message(F.text.func(lambda s: bool(s) and any(s == btn_feed(l) for l in SUPPORTED_LANGS)))
-async def reply_feed(message: Message, session: AsyncSession, db_user: User) -> None:
-    from app.bot.handlers.news import open_feed
-
-    await open_feed(message, session, db_user)
-
-
-@router.message(F.text.func(lambda s: bool(s) and any(s == btn_search(l) for l in SUPPORTED_LANGS)))
-async def reply_search(message: Message, session: AsyncSession, db_user: User, state: FSMContext) -> None:
-    from app.bot.handlers.search import ask_search
-    from app.bot.states import SearchStates
-
-    await state.set_state(SearchStates.waiting_query)
-    await ask_search(message, session, db_user)
-
-
-@router.message(F.text.func(lambda s: bool(s) and any(s == btn_settings(l) for l in SUPPORTED_LANGS)))
-async def reply_settings(message: Message, session: AsyncSession, db_user: User) -> None:
-    from app.bot.handlers.settings import open_settings
-
-    await open_settings(message, session, db_user)
-
-
-@router.message(F.text.func(lambda s: bool(s) and any(s == btn_trends(l) for l in SUPPORTED_LANGS)))
-async def reply_trends(message: Message, session: AsyncSession, db_user: User) -> None:
-    from app.bot.handlers.trends import show_trends_msg
-
-    await show_trends_msg(message, session, db_user)
+# Reply keyboard routing lives in handlers/menu.py (registered first).

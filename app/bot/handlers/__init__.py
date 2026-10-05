@@ -6,6 +6,7 @@ from app.bot.handlers import (
     channels,
     home,
     library,
+    menu,
     news,
     search,
     settings,
@@ -15,6 +16,8 @@ from app.bot.handlers import (
 
 def setup_routers() -> Router:
     root = Router()
+    # Reply keyboard first — must beat admin/search/channel FSM handlers
+    root.include_router(menu.router)
     root.include_router(admin_panel.router)
     root.include_router(admin.router)
     root.include_router(home.router)

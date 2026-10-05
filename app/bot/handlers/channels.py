@@ -60,6 +60,11 @@ async def bulk_start(callback: CallbackQuery, state: FSMContext, session: AsyncS
 
 @router.message(ChannelBulkStates.waiting_list)
 async def bulk_import(message: Message, session: AsyncSession, db_user: User, state: FSMContext) -> None:
+    from app.bot.handlers.menu import is_main_menu_button
+    from aiogram.dispatcher.event.bases import SkipHandler
+
+    if is_main_menu_button(message.text):
+        raise SkipHandler()
     lang = await PreferencesService(session).lang(db_user)
     data = await state.get_data()
     from_onboarding = bool(data.get("onboarding"))

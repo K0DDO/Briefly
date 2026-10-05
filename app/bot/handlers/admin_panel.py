@@ -1802,6 +1802,11 @@ async def admin_menu_fallback(
     db_user: User,
     state: FSMContext,
 ) -> None:
+    from app.bot.handlers.menu import is_main_menu_button
+
+    if is_main_menu_button(message.text):
+        await state.clear()
+        raise SkipHandler()
     if not await _require_admin(session, db_user, state):
         raise SkipHandler()
     await _admin_answer(
