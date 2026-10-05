@@ -152,7 +152,10 @@ class SearchService:
         if user is not None and scope in ("auto", "user"):
             from app.services.preferences import FeedService
 
-            channel_ids = await FeedService(self._session)._user_channel_ids(user.id) or None
+            channel_ids = await FeedService(self._session)._user_channel_ids(user.id)
+            # Empty follows → empty results (never escalate to global via `or None`)
+            if not channel_ids:
+                return []
             us = await self._prefs.get_or_create(user)
             enabled_themes = list(us.enabled_categories or [])
             theme_weights = dict(us.theme_weights or {})
@@ -403,16 +406,8 @@ class SearchService:
         explanations = {r.event.id: r.explanation for r in ranked}
         event_map = {r.event.id: r.event for r in ranked}
 
-        # Prefer fresher + multi-source events in AI context (top 6 only, lean summaries)
-        ranked_for_ai = sorted(
-            ranked,
-            key=lambda r: (
-                float(r.event.sources_count or 0),
-                float(r.freshness or 0),
-                float(r.score),
-            ),
-            reverse=True,
-        )[:6]
+        # Prefer rank score for AI context (top 6)
+        ranked_for_ai = ranked[:6]
 
         contexts: list[tuple[int, str, str]] = []
         for r in ranked_for_ai:
@@ -428,17 +423,18 @@ class SearchService:
         settings = get_settings()
         cache_key = None
         if settings.ai_search_synthesis:
-            scope = ",".join(str(e.id) for e in ranked_for_ai)
-            digest = hashlib.sha256(f"{query}|{lang}|{scope}".encode()).hexdigest()[:24]
+            scope_ids = ",".join(str(e.id) for e in ranked_for_ai)
+            digest = hashlib.sha256(f"{query}|{lang}|{scope_ids}".encode()).hexdigest()[:24]
             cache_key = f"search:{digest}"
             cached = await cache_get(cache_key)
-            if isinstance(cached, dict) and cached.get("answer"):
+            # Only reuse positive cached answers — never long-cache empties/vetoes
+            if isinstance(cached, dict) and cached.get("answer") and cached.get("relevant", True):
                 answer_text = str(cached["answer"])
                 used = [int(x) for x in (cached.get("used_ids") or []) if str(x).isdigit()]
                 used_events = [event_map[i] for i in used if i in event_map]
-                if used_events or not cached.get("relevant", True):
+                if used_events:
                     return SearchResult(
-                        answer=answer_text if cached.get("relevant", True) else empty,
+                        answer=answer_text,
                         hits=[
                             SearchHit(
                                 news_id=e.id,
@@ -477,18 +473,6 @@ class SearchService:
                     user_id=user.id if user else None,
                 )
 
-        if cache_key and settings.ai_search_synthesis:
-            ttl = max(3600, int(settings.ai_cache_ttl_days or 30) * 86400)
-            await cache_set(
-                cache_key,
-                {
-                    "answer": answer.answer,
-                    "relevant": answer.relevant,
-                    "used_ids": list(answer.used_event_ids),
-                },
-                ttl_seconds=ttl,
-            )
-
         hits = [
             SearchHit(
                 news_id=r.event.id,
@@ -499,19 +483,8 @@ class SearchService:
             for r in ranked
         ]
 
-        if answer.relevant and answer.used_event_ids:
-            used_ids = [i for i in answer.used_event_ids if i in event_map]
-            if not used_ids:
-                return SearchResult(
-                    answer=empty,
-                    hits=[],
-                    events=[],
-                    external_count=external_count,
-                    intent=intent.intent.value,
-                    matched_nodes=node_names,
-                    related_questions=related_questions(query, node_names, lang=lang),
-                    deep=deep,
-                )
+        used_ids = [i for i in (answer.used_event_ids or ()) if i in event_map]
+        if answer.relevant and used_ids:
             used = [event_map[i] for i in used_ids]
             kept_hits = [h for h in hits if h.news_id in set(used_ids)]
             text = answer.answer
@@ -522,17 +495,25 @@ class SearchService:
                     query,
                     [(e.id, e.title, e.summary) for e in used],
                 )
-                if not safe.relevant:
-                    return SearchResult(
-                        answer=empty,
-                        hits=[],
-                        events=[],
-                        external_count=external_count,
-                        intent=intent.intent.value,
-                        matched_nodes=node_names,
-                        deep=deep,
-                    )
-                text = safe.answer
+                if safe.relevant and safe.used_event_ids:
+                    text = safe.answer
+                    used_ids = [i for i in safe.used_event_ids if i in event_map] or used_ids
+                    used = [event_map[i] for i in used_ids]
+                    kept_hits = [h for h in hits if h.news_id in set(used_ids)]
+                else:
+                    text, used, kept_hits = self._list_fallback(query, ranked, hits)
+                    used_ids = [e.id for e in used]
+            if cache_key and settings.ai_search_synthesis:
+                ttl = max(3600, int(settings.ai_cache_ttl_days or 30) * 86400)
+                await cache_set(
+                    cache_key,
+                    {
+                        "answer": text,
+                        "relevant": True,
+                        "used_ids": list(used_ids),
+                    },
+                    ttl_seconds=ttl,
+                )
             return SearchResult(
                 answer=text,
                 hits=kept_hits,
@@ -545,25 +526,19 @@ class SearchService:
                 deep=deep,
             )
 
-        if not answer.relevant or not answer.used_event_ids:
-            return SearchResult(
-                answer=empty,
-                hits=[],
-                events=[],
-                external_count=external_count,
-                intent=intent.intent.value,
-                matched_nodes=node_names,
-                related_questions=related_questions(query, node_names, lang=lang),
-                deep=deep,
-            )
-
-        used_ids = set(answer.used_event_ids)
-        used_events = [event_map[i] for i in answer.used_event_ids if i in event_map]
-        kept_hits = [h for h in hits if h.news_id in used_ids]
+        # AI/heuristic veto — still show ranked hits (do not cache empties)
+        text, used, kept_hits = self._list_fallback(query, ranked, hits)
+        used_ids = [e.id for e in used]
+        logger.info(
+            "search fallback to ranked list query=%r ranked=%s ai_relevant=%s",
+            query[:80],
+            len(ranked),
+            getattr(answer, "relevant", None),
+        )
         return SearchResult(
-            answer=answer.answer,
+            answer=text,
             hits=kept_hits,
-            events=used_events,
+            events=used,
             external_count=external_count,
             explanations={i: explanations.get(i, []) for i in used_ids},
             related_questions=related_questions(query, node_names, lang=lang),
@@ -571,6 +546,23 @@ class SearchService:
             matched_nodes=node_names,
             deep=deep,
         )
+
+    @staticmethod
+    def _list_fallback(
+        query: str,
+        ranked: list[RankedEvent],
+        hits: list[SearchHit],
+    ) -> tuple[str, list[Event], list[SearchHit]]:
+        """Build a usable answer from ranked events when AI synthesis fails."""
+        top = ranked[:5]
+        used = [r.event for r in top]
+        used_ids = {e.id for e in used}
+        kept = [h for h in hits if h.news_id in used_ids]
+        lines = [f"По запросу «{query}»:"]
+        for ev in used:
+            summary = (ev.summary or "")[:160]
+            lines.append(f"• {ev.title}" + (f": {summary}" if summary else ""))
+        return "\n".join(lines), used, kept
 
     @staticmethod
     def _answer_faithful(query: str, answer: str, events: list[Event]) -> bool:
@@ -605,9 +597,14 @@ class SearchService:
                 return False
         meaningful = {t for t in q_tokens if not t.isdigit() and len(t) >= 3}
         if meaningful and not q_entities:
-            overlap = {t for t in meaningful if t in full}
-            need = 1 if len(meaningful) <= 2 else max(1, len(meaningful) // 2)
-            if len(overlap) < need and sim < 0.45:
+            overlap = set()
+            for t in meaningful:
+                if t in full:
+                    overlap.add(t)
+                elif len(t) >= 4 and t[: max(4, len(t) - 2)] in full:
+                    overlap.add(t)
+            need = 1 if len(meaningful) <= 4 else max(1, (len(meaningful) + 2) // 3)
+            if len(overlap) < need and sim < 0.40:
                 return False
         return True
 

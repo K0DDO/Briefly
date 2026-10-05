@@ -92,6 +92,17 @@ class HeuristicAIService:
     async def analyze_message(self, text: str, *, source_count: int = 1, channel_title: str | None = None):
         return await self.analyze_post(text, source_count=source_count, channel_title=channel_title)
 
+    @staticmethod
+    def _token_in_blob(tok: str, blob: str) -> bool:
+        """Substring + light stem match for RU morphology (нейросетях ↔ нейросети)."""
+        if tok in blob:
+            return True
+        if len(tok) >= 4:
+            stem = tok[: max(4, len(tok) - 2)]
+            if stem in blob:
+                return True
+        return False
+
     async def answer_question(
         self,
         query: str,
@@ -104,8 +115,9 @@ class HeuristicAIService:
         relevant: list[tuple[int, str, str]] = []
         for event_id, title, summary in contexts:
             blob = f"{title} {summary}".lower()
-            hits = sum(1 for t in check if t in blob)
-            need = 1 if len(check) <= 2 else max(1, len(check) // 2)
+            hits = sum(1 for t in check if self._token_in_blob(t, blob))
+            # Soft gate: one hit for short queries; ~1/3 for longer ones
+            need = 1 if len(check) <= 4 else max(1, (len(check) + 2) // 3)
             if hits >= need:
                 relevant.append((event_id, title, summary))
         if not relevant:
