@@ -88,3 +88,12 @@ def test_period_and_tokens():
     assert "nvidia" in significant_tokens("what about NVIDIA chips")
     ents = extract_query_entities("Что нового по iPhone 18 Pro?")
     assert any("iphone" in e.lower() for e in ents)
+
+
+def test_safe_screen_text_rejects_blank():
+    from app.bot.ui.nav import _safe_screen_text
+
+    assert _safe_screen_text("") == "🍓"
+    assert _safe_screen_text("   ") == "🍓"
+    assert _safe_screen_text("\u200b") == "🍓"
+    assert _safe_screen_text("hello") == "hello"

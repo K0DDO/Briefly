@@ -54,12 +54,24 @@ async def push_reply_keyboard(message: Message, reply_markup: ReplyKeyboardMarku
     """
     Apply a reply keyboard without leaving a permanent message in the chat.
     Telegram keeps the keyboard after the carrier message is deleted.
+
+    Do NOT send zero-width-only text: Telegram rejects it as empty
+    (`Bad Request: text must be non-empty`) and aborts the handler.
     """
-    carrier = await message.answer("\u200b", reply_markup=reply_markup)
+    try:
+        carrier = await message.answer("🍓", reply_markup=reply_markup)
+    except TelegramBadRequest:
+        return
     try:
         await carrier.delete()
     except TelegramBadRequest:
         pass
+
+
+def _safe_screen_text(text: str) -> str:
+    """Telegram rejects blank / whitespace-only message text."""
+    cleaned = (text or "").strip()
+    return cleaned if cleaned else "🍓"
 
 
 async def show_screen(
@@ -76,6 +88,7 @@ async def show_screen(
     - edit=True: update this message in place when possible
     - otherwise: delete the previous UI message, then send a new one
     """
+    text = _safe_screen_text(text)
     if edit and getattr(target, "message_id", None):
         try:
             await target.edit_text(
@@ -128,6 +141,8 @@ async def replace_screen(
     msg = callback.message
     if msg is None:
         return None
+
+    text = _safe_screen_text(text)
 
     # Prefer edit for text messages
     if not getattr(msg, "photo", None) and not getattr(msg, "video", None) and not getattr(msg, "document", None):
