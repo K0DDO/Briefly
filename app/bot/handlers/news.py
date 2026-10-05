@@ -30,6 +30,13 @@ async def _event(session: AsyncSession, event_id: int):
     return await NewsService(session).get_event(event_id)
 
 
+async def _event_for_user(session: AsyncSession, user: User, event_id: int):
+    feed = FeedService(session)
+    if not await feed.user_may_access_event(user, event_id):
+        return None
+    return await _event(session, event_id)
+
+
 async def _related_events(session: AsyncSession, news, *, limit: int = 4):
     """Prefer cached related_event_ids; fall back to KG only if empty."""
     cached = list(getattr(news, "related_event_ids", None) or [])[:limit]
@@ -112,7 +119,14 @@ async def open_feed(
     elif not items:
         text = t(lang, "no_more_news")
     else:
-        text = format_feed(lang, items, tz_name=us.timezone)
+        ch_ids, ch_names = await FeedService(session).channel_visibility_scope(user)
+        text = format_feed(
+            lang,
+            items,
+            tz_name=us.timezone,
+            allowed_channel_ids=ch_ids,
+            allowed_usernames=ch_names,
+        )
     ids = [n.id for n in items]
     has_more = offset + len(items) < total and bool(items)
     kb = feed_keyboard(lang, offset=offset, page_ids=ids, has_more=has_more)
@@ -244,14 +258,24 @@ async def _show_detail(
     us = await prefs.get_or_create(user)
     news_lang = us.news_language or lang
     feed = FeedService(session)
-    news = await _event(session, ids[index])
+    news = await _event_for_user(session, user, ids[index])
     if not news:
         return
     await ensure_translation(session, news, news_lang)
     if mark_current_read:
         await feed.mark_read(user, news)
-    brief = _briefs.build(news, lang=news_lang, show_summary=us.show_summary)
+    ch_ids, ch_names = await feed.channel_visibility_scope(user)
+    brief = _briefs.build(
+        news,
+        lang=news_lang,
+        show_summary=us.show_summary,
+        allowed_channel_ids=ch_ids,
+        allowed_usernames=ch_names,
+    )
     related = await _related_events(session, news, limit=4)
+    # Drop related stories the user cannot see
+    allowed_ids = await feed.event_ids_for_user(user)
+    related = [r for r in related if r.id in allowed_ids]
     ids_s = ",".join(str(i) for i in ids)
     await message.edit_text(
         format_news_detail(
@@ -273,9 +297,9 @@ async def _show_detail(
 @router.callback_query(F.data.startswith("feed:up:"))
 async def feed_up(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
     news_id = int(callback.data.split(":")[2])
-    await ReactionService(session).mark_interesting(db_user.id, news_id)
-    news = await _event(session, news_id)
+    news = await _event_for_user(session, db_user, news_id)
     if news:
+        await ReactionService(session).mark_interesting(db_user.id, news_id)
         await FeedService(session).mark_liked(db_user, news)
     lang = await _lang(session, db_user)
     await callback.answer(t(lang, "interesting"))
@@ -287,9 +311,9 @@ async def feed_down(callback: CallbackQuery, session: AsyncSession, db_user: Use
     news_id, offset, index = int(parts[2]), int(parts[3]), int(parts[4])
     ids_s = parts[5] if len(parts) > 5 else ""
     ids = [int(x) for x in ids_s.split(",") if x]
-    await ReactionService(session).mark_not_interesting(db_user.id, news_id)
-    news = await _event(session, news_id)
+    news = await _event_for_user(session, db_user, news_id)
     if news:
+        await ReactionService(session).mark_not_interesting(db_user.id, news_id)
         await FeedService(session).dislike(db_user, news)
     lang = await _lang(session, db_user)
     await callback.answer(t(lang, "not_interesting"))
@@ -304,12 +328,19 @@ async def feed_down(callback: CallbackQuery, session: AsyncSession, db_user: Use
     prefs = PreferencesService(session)
     us = await prefs.get_or_create(db_user)
     news_lang = us.news_language or lang
-    n2 = await _event(session, remaining[new_index])
+    n2 = await _event_for_user(session, db_user, remaining[new_index])
     if not n2:
         return
     await ensure_translation(session, n2, news_lang)
     # Do not mark the next card as read — user only disliked the previous one.
-    brief = _briefs.build(n2, lang=news_lang, show_summary=us.show_summary)
+    ch_ids, ch_names = await FeedService(session).channel_visibility_scope(db_user)
+    brief = _briefs.build(
+        n2,
+        lang=news_lang,
+        show_summary=us.show_summary,
+        allowed_channel_ids=ch_ids,
+        allowed_usernames=ch_names,
+    )
     await callback.message.edit_text(
         format_news_detail(
             lang,
@@ -329,7 +360,7 @@ async def feed_down(callback: CallbackQuery, session: AsyncSession, db_user: Use
 @router.callback_query(F.data.startswith("feed:fav:"))
 async def feed_fav(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
     news_id = int(callback.data.split(":")[2])
-    news = await _event(session, news_id)
+    news = await _event_for_user(session, db_user, news_id)
     lang = await _lang(session, db_user)
     if not news:
         await callback.answer()
@@ -341,12 +372,18 @@ async def feed_fav(callback: CallbackQuery, session: AsyncSession, db_user: User
 @router.callback_query(F.data.startswith("feed:src:"))
 async def feed_sources(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
     news_id = int(callback.data.split(":")[2])
-    news = await _event(session, news_id)
+    news = await _event_for_user(session, db_user, news_id)
     lang = await _lang(session, db_user)
     await callback.answer()
     if not news or not callback.message:
         return
-    brief = _briefs.build(news, lang=lang)
+    ch_ids, ch_names = await FeedService(session).channel_visibility_scope(db_user)
+    brief = _briefs.build(
+        news,
+        lang=lang,
+        allowed_channel_ids=ch_ids,
+        allowed_usernames=ch_names,
+    )
     pairs = [(s.channel_title or "Source", s.url) for s in brief.sources if s.url]
     us = await PreferencesService(session).get_or_create(db_user)
     await callback.message.answer(

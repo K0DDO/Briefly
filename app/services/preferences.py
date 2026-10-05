@@ -706,6 +706,33 @@ class FeedService:
         channel_ids = await self._user_channel_ids(user.id)
         return await self._event_ids_for_channels(channel_ids)
 
+    async def channel_visibility_scope(self, user: User) -> tuple[set[int], set[str]]:
+        """Channel ids + usernames the user may see as sources (active follows only)."""
+        channel_ids = set(await self._user_channel_ids(user.id))
+        if not channel_ids:
+            return set(), set()
+        result = await self._session.execute(
+            select(Channel).where(Channel.id.in_(list(channel_ids)))
+        )
+        usernames = {
+            (c.username or "").strip().lower()
+            for c in result.scalars().all()
+            if c.username
+        }
+        return channel_ids, usernames
+
+    async def user_may_access_event(self, user: User, event_id: int) -> bool:
+        """True if event has a source from user's channels or user already interacted."""
+        if event_id in await self.event_ids_for_user(user):
+            return True
+        state = await self._session.scalar(
+            select(UserEventState.id).where(
+                UserEventState.user_id == user.id,
+                UserEventState.event_id == event_id,
+            )
+        )
+        return state is not None
+
     async def _user_channel_ids(self, user_id: int) -> list[int]:
         result = await self._session.execute(
             select(UserChannel.channel_id).where(

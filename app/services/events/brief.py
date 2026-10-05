@@ -45,11 +45,33 @@ class Brief:
 
 
 class BriefBuilderService:
-    def build(self, event: Event, *, lang: str = "ru", show_summary: bool = True) -> Brief:
+    def build(
+        self,
+        event: Event,
+        *,
+        lang: str = "ru",
+        show_summary: bool = True,
+        allowed_channel_ids: set[int] | None = None,
+        allowed_usernames: set[str] | None = None,
+    ) -> Brief:
         # Only use sources if already eager-loaded — never lazy-load (MissingGreenlet).
         loaded_sources = self._loaded_sources(event)
-        sources_count = int(event.sources_count or 0) or len(loaded_sources)
-        posts_count = int(event.posts_count or 0) or sources_count
+        if allowed_channel_ids is not None or allowed_usernames is not None:
+            loaded_sources = [
+                src
+                for src in loaded_sources
+                if self._source_visible(
+                    src,
+                    allowed_channel_ids=allowed_channel_ids or set(),
+                    allowed_usernames=allowed_usernames or set(),
+                )
+            ]
+            # Per-user display counts — never reveal other users' channels.
+            sources_count = len(loaded_sources)
+            posts_count = sources_count
+        else:
+            sources_count = int(event.sources_count or 0) or len(loaded_sources)
+            posts_count = int(event.posts_count or 0) or sources_count
         updated = bool(
             sources_count >= 2
             and event.updated_at
@@ -58,7 +80,7 @@ class BriefBuilderService:
         )
         sources: list[BriefSource] = []
         for src in loaded_sources:
-            # Never touch src.message here — lazy load breaks async SQLAlchemy.
+            # Never touch src.message here unless already loaded — lazy load breaks async SQLAlchemy.
             sources.append(
                 BriefSource(
                     channel_title=src.channel_title or "Channel",
@@ -113,3 +135,27 @@ class BriefBuilderService:
         if "sources" in insp.unloaded:
             return []
         return list(event.sources or [])
+
+    @staticmethod
+    def _source_visible(
+        src,
+        *,
+        allowed_channel_ids: set[int],
+        allowed_usernames: set[str],
+    ) -> bool:
+        """True if this source belongs to the viewer's channels (no lazy IO)."""
+        msg = None
+        try:
+            insp = sa_inspect(src)
+            if "message" not in insp.unloaded:
+                msg = src.message
+        except Exception:
+            msg = None
+        if msg is not None:
+            cid = getattr(msg, "channel_id", None)
+            if cid is not None:
+                return int(cid) in allowed_channel_ids
+        uname = (getattr(src, "channel_username", None) or "").strip().lower()
+        if uname and uname in allowed_usernames:
+            return True
+        return False

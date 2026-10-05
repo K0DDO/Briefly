@@ -50,8 +50,21 @@ def format_meta_line(
     return line
 
 
-def to_brief(event: Event, lang: str, *, show_summary: bool = True) -> Brief:
-    return _builder.build(event, lang=lang, show_summary=show_summary)
+def to_brief(
+    event: Event,
+    lang: str,
+    *,
+    show_summary: bool = True,
+    allowed_channel_ids: set[int] | None = None,
+    allowed_usernames: set[str] | None = None,
+) -> Brief:
+    return _builder.build(
+        event,
+        lang=lang,
+        show_summary=show_summary,
+        allowed_channel_ids=allowed_channel_ids,
+        allowed_usernames=allowed_usernames,
+    )
 
 
 def format_home(
@@ -91,6 +104,8 @@ def format_feed(
     empty_key: str = "no_more_news",
     empty_plain: str | None = None,
     tz_name: str | None = None,
+    allowed_channel_ids: set[int] | None = None,
+    allowed_usernames: set[str] | None = None,
 ) -> str:
     if not items:
         if empty_plain:
@@ -101,7 +116,14 @@ def format_feed(
         if isinstance(item, Brief):
             briefs.append(item)
         else:
-            briefs.append(to_brief(item, lang))
+            briefs.append(
+                to_brief(
+                    item,
+                    lang,
+                    allowed_channel_ids=allowed_channel_ids,
+                    allowed_usernames=allowed_usernames,
+                )
+            )
     lines = [f"<b>📰 {t(lang, title_key)}</b>", ""]
     for i, brief in enumerate(briefs, start=1):
         badge = f"  📈 {t(lang, 'updated_badge')}" if brief.updated else ""
@@ -247,6 +269,8 @@ def format_search_answer(
     related_questions: list[str] | None = None,
     matched_nodes: list[str] | None = None,
     tz_name: str | None = None,
+    allowed_channel_ids: set[int] | None = None,
+    allowed_usernames: set[str] | None = None,
 ) -> str:
     from app.services.time_prefs import format_local
 
@@ -268,7 +292,12 @@ def format_search_answer(
     lines.append(f"<b>{t(lang, 'sources')}</b>")
     lines.append("")
     for i, event in enumerate(news_items[:5], start=1):
-        brief = to_brief(event, lang)
+        brief = to_brief(
+            event,
+            lang,
+            allowed_channel_ids=allowed_channel_ids,
+            allowed_usernames=allowed_usernames,
+        )
         src = brief.sources[0] if brief.sources else None
         channel = escape(src.channel_title if src else (brief.topic or "—"))
         date = format_local(src.published_at, tz_name, fmt="%d.%m.%Y") if src else ""

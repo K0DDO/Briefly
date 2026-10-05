@@ -74,6 +74,7 @@ async def show_favorites(message: Message, session: AsyncSession, db_user: User)
     if not items:
         await message.answer(t(lang, "empty_favorites"))
         return
+    ch_ids, ch_names = await FeedService(session).channel_visibility_scope(db_user)
     await message.answer(
         format_feed(
             lang,
@@ -81,6 +82,8 @@ async def show_favorites(message: Message, session: AsyncSession, db_user: User)
             title_key="favorites",
             empty_key="empty_favorites",
             tz_name=us.timezone,
+            allowed_channel_ids=ch_ids,
+            allowed_usernames=ch_names,
         ),
         disable_web_page_preview=True,
     )
@@ -147,14 +150,25 @@ async def hist_open(callback: CallbackQuery, session: AsyncSession, db_user: Use
     event_id = int(callback.data.split(":")[2])
     lang = await PreferencesService(session).lang(db_user)
     us = await PreferencesService(session).get_or_create(db_user)
+    feed = FeedService(session)
+    if not await feed.user_may_access_event(db_user, event_id):
+        await callback.answer()
+        return
     news = await NewsService(session).get_event(event_id)
     await callback.answer()
     if not news or not callback.message:
         return
     # Ensure it stays in history (already read)
-    await FeedService(session).mark_read(db_user, news)
+    await feed.mark_read(db_user, news)
     await ensure_translation(session, news, us.news_language or lang)
-    brief = _briefs.build(news, lang=us.news_language or lang, show_summary=us.show_summary)
+    ch_ids, ch_names = await feed.channel_visibility_scope(db_user)
+    brief = _briefs.build(
+        news,
+        lang=us.news_language or lang,
+        show_summary=us.show_summary,
+        allowed_channel_ids=ch_ids,
+        allowed_usernames=ch_names,
+    )
     await callback.message.answer(
         format_news_detail(lang, brief, index=1, total=1, show_summary=us.show_summary),
         reply_markup=detail_keyboard(
@@ -167,22 +181,27 @@ async def hist_open(callback: CallbackQuery, session: AsyncSession, db_user: Use
 @router.callback_query(F.data.startswith("hist:fav:"))
 async def hist_fav(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
     event_id = int(callback.data.split(":")[2])
+    feed = FeedService(session)
+    if not await feed.user_may_access_event(db_user, event_id):
+        await callback.answer()
+        return
     news = await NewsService(session).get_event(event_id)
     lang = await PreferencesService(session).lang(db_user)
     if not news:
         await callback.answer()
         return
-    saved = await FeedService(session).toggle_favorite(db_user, news)
+    saved = await feed.toggle_favorite(db_user, news)
     await callback.answer(t(lang, "saved") if saved else t(lang, "save"))
 
 
 @router.callback_query(F.data.startswith("hist:del:"))
 async def hist_del(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
     event_id = int(callback.data.split(":")[2])
+    feed = FeedService(session)
     news = await NewsService(session).get_event(event_id)
     lang = await PreferencesService(session).lang(db_user)
-    if news:
-        await FeedService(session).remove_from_history(db_user, news)
+    if news and await feed.user_may_access_event(db_user, event_id):
+        await feed.remove_from_history(db_user, news)
     await callback.answer(t(lang, "hist_remove"))
     if callback.message:
         await _render_history(callback.message, session, db_user, edit=True)

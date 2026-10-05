@@ -16,7 +16,7 @@ from app.bot.keyboards import search_result_keyboard
 from app.bot.states import SearchStates
 from app.bot.ui import format_search_answer, format_search_explain
 from app.models import User
-from app.services.preferences import PreferencesService
+from app.services.preferences import FeedService, PreferencesService
 from app.services.search import SearchService
 from app.services.translation import ensure_translation
 
@@ -105,6 +105,7 @@ async def _run_search(
     for n in result.events:
         await ensure_translation(session, n, news_lang)
 
+    ch_ids, ch_names = await FeedService(session).channel_visibility_scope(db_user)
     text = format_search_answer(
         lang,
         result.answer,
@@ -113,6 +114,8 @@ async def _run_search(
         related_questions=result.related_questions,
         matched_nodes=result.matched_nodes,
         tz_name=us.timezone,
+        allowed_channel_ids=ch_ids,
+        allowed_usernames=ch_names,
     )
     if deep:
         text = f"🔬 <b>{t(lang, 'deep_search')}</b>\n\n" + text

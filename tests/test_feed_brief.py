@@ -53,6 +53,19 @@ def test_brief_build_without_message_relationship():
     assert brief.sources[0].published_at is not None
 
 
+def test_brief_hides_foreign_channel_sources():
+    event = _sample_event()
+    brief = BriefBuilderService().build(
+        event,
+        lang="ru",
+        allowed_channel_ids=set(),
+        allowed_usernames={"tech"},
+    )
+    assert brief.sources_count == 1
+    assert brief.sources[0].channel_username == "tech"
+    assert all(s.channel_username != "ainews" for s in brief.sources)
+
+
 def test_format_feed_does_not_need_message():
     text = format_feed("ru", [_sample_event()])
     assert "NVIDIA" in text
