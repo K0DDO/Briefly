@@ -12,6 +12,9 @@ env/
 .env.local
 .env.production
 !.env.production.example
+
+# Local agent brief (same as Erunda — not in git)
+PROJECT_CONTEXT.md
 *.egg-info/
 dist/
 build/

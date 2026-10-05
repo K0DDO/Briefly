@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     ai_provider: str = "heuristic"
     groq_api_key: str = ""  # legacy single key
     groq_api_keys: str = ""  # comma-separated key pool
-    groq_model: str = "llama-3.1-8b-instant"
+    groq_model: str = "openai/gpt-oss-20b"
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_timeout_seconds: float = 45.0
     kimi_api_keys: str = ""  # comma-separated Moonshot/Kimi keys
@@ -118,6 +118,18 @@ class Settings(BaseSettings):
     def _empty_database_url(cls, v: object) -> object:
         if isinstance(v, str) and not v.strip():
             return None
+        return v
+
+    @field_validator("groq_model", mode="before")
+    @classmethod
+    def _remap_deprecated_groq_model(cls, v: object) -> object:
+        # Same remap as Erunda: Groq retired llama-3.1-8b-instant.
+        deprecated = {"llama-3.1-8b-instant", "llama3-8b-8192", "llama-3.1-70b-versatile"}
+        default = "openai/gpt-oss-20b"
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return default
+        if isinstance(v, str) and v.strip() in deprecated:
+            return default
         return v
 
     @property
