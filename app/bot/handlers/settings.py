@@ -47,6 +47,7 @@ async def open_settings(
     user: User,
     *,
     edit: bool = False,
+    bottom_keyboard=None,
 ) -> None:
     from app.bot.ui.nav import show_screen
 
@@ -55,7 +56,15 @@ async def open_settings(
     lang = settings.language or "ru"
     text = format_settings(lang, settings)
     kb = settings_keyboard(lang)
-    await show_screen(message, session, user, text, reply_markup=kb, edit=edit)
+    await show_screen(
+        message,
+        session,
+        user,
+        text,
+        reply_markup=kb,
+        bottom_keyboard=bottom_keyboard,
+        edit=edit,
+    )
 
 
 @router.message(Command("settings"))
@@ -88,7 +97,6 @@ async def set_lang_menu(callback: CallbackQuery, session: AsyncSession, db_user:
 async def set_ui_lang(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
     from app.bot.i18n import LANG_LABELS, SUPPORTED_LANGS
     from app.bot.keyboards.reply import main_menu
-    from app.bot.ui.nav import push_reply_keyboard
 
     code = (callback.data or "").split(":", 1)[1]
     if code not in SUPPORTED_LANGS:
@@ -98,8 +106,13 @@ async def set_ui_lang(callback: CallbackQuery, session: AsyncSession, db_user: U
     label = LANG_LABELS.get(code, code)
     await callback.answer(f"✅ {label}")
     if callback.message:
-        await push_reply_keyboard(callback.message, main_menu(code))
-        await open_settings(callback.message, session, db_user, edit=True)
+        await open_settings(
+            callback.message,
+            session,
+            db_user,
+            edit=True,
+            bottom_keyboard=main_menu(code),
+        )
 
 
 @router.callback_query(F.data == "set:interval")

@@ -140,7 +140,7 @@ async def send_welcome_onboarding(
 
 
 async def send_home(message: Message, session: AsyncSession, user: User) -> None:
-    from app.bot.ui.nav import push_reply_keyboard, show_screen
+    from app.bot.ui.nav import show_screen
 
     prefs = PreferencesService(session)
     settings = await prefs.get_or_create(user)
@@ -174,14 +174,14 @@ async def send_home(message: Message, session: AsyncSession, user: User) -> None
         saved=stats["saved"],
         liked=stats["liked"],
     )
-    # Refresh reply keyboard without leaving an extra message
-    await push_reply_keyboard(message, main_menu(lang))
+    # Reply keyboard on the lasting home message (do not send+delete carrier).
     await show_screen(
         message,
         session,
         user,
         text,
         reply_markup=home_keyboard(lang),
+        bottom_keyboard=main_menu(lang),
     )
 
 
@@ -239,6 +239,10 @@ async def go_home(event: Message | CallbackQuery, session: AsyncSession, db_user
             session=session,
             user=db_user,
         )
+        from app.bot.ui.nav import push_reply_keyboard
+
+        if event.message:
+            await push_reply_keyboard(event.message, main_menu(lang))
         return
     await send_home(event, session, db_user)
 
@@ -366,7 +370,8 @@ async def ob_tour(callback: CallbackQuery, session: AsyncSession, db_user: User)
 async def ob_finish(callback: CallbackQuery, session: AsyncSession, db_user: User) -> None:
     from aiogram.exceptions import TelegramBadRequest
 
-    from app.bot.ui.nav import push_reply_keyboard, remember_ui_message
+    from app.bot.brand import banner_file
+    from app.bot.ui.nav import remember_ui_message
 
     prefs = PreferencesService(session)
     await prefs.mark_welcome_seen(db_user)
@@ -386,13 +391,23 @@ async def ob_finish(callback: CallbackQuery, session: AsyncSession, db_user: Use
             await msg.edit_reply_markup(reply_markup=None)
         except TelegramBadRequest:
             pass
-    await push_reply_keyboard(msg, main_menu(lang))
-    sent = await send_banner(
-        msg,
-        _done_caption(lang),
-        reply_markup=onboarding_done_keyboard(lang),
-        occasion="done",
-    )
+
+    caption = _done_caption(lang)
+    inline = onboarding_done_keyboard(lang)
+    photo = banner_file()
+    if photo is not None:
+        # Reply keyboard on lasting photo, then swap in inline buttons via edit.
+        sent = await msg.answer_photo(photo, caption=caption, reply_markup=main_menu(lang))
+        try:
+            await sent.edit_caption(caption=caption, reply_markup=inline)
+        except TelegramBadRequest:
+            pass
+    else:
+        sent = await msg.answer(caption, reply_markup=main_menu(lang))
+        try:
+            await sent.edit_text(caption, reply_markup=inline)
+        except TelegramBadRequest:
+            pass
     await remember_ui_message(session, db_user, sent)
 
 

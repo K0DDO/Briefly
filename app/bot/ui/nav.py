@@ -52,20 +52,17 @@ async def remember_ui_message(
 
 async def push_reply_keyboard(message: Message, reply_markup: ReplyKeyboardMarkup) -> None:
     """
-    Apply a reply keyboard without leaving a permanent message in the chat.
-    Telegram keeps the keyboard after the carrier message is deleted.
+    Apply a reply keyboard.
 
-    Do NOT send zero-width-only text: Telegram rejects it as empty
-    (`Bad Request: text must be non-empty`) and aborts the handler.
+    IMPORTANT: do NOT delete the carrier message. On many Telegram clients
+    deleting the message that set ReplyKeyboardMarkup also hides the keyboard
+    (buttons flash and disappear) — that broke /menu.
+    Prefer show_screen(..., bottom_keyboard=...) so the lasting screen owns the kb.
     """
     try:
-        carrier = await message.answer("🍓", reply_markup=reply_markup)
+        await message.answer("🍓", reply_markup=reply_markup)
     except TelegramBadRequest:
         return
-    try:
-        await carrier.delete()
-    except TelegramBadRequest:
-        pass
 
 
 def _safe_screen_text(text: str) -> str:
@@ -81,12 +78,15 @@ async def show_screen(
     text: str,
     *,
     reply_markup: InlineKeyboardMarkup | None = None,
+    bottom_keyboard: ReplyKeyboardMarkup | None = None,
     edit: bool = False,
 ) -> Message:
     """
     Show one interactive screen.
     - edit=True: update this message in place when possible
     - otherwise: delete the previous UI message, then send a new one
+    - bottom_keyboard: attach ReplyKeyboard to the lasting message (send, then
+      edit inline markup onto it). Deleting a kb carrier removes the keyboard.
     """
     text = _safe_screen_text(text)
     if edit and getattr(target, "message_id", None):
@@ -95,6 +95,8 @@ async def show_screen(
                 text, reply_markup=reply_markup, disable_web_page_preview=True
             )
             await remember_ui_message(session, user, target)
+            if bottom_keyboard is not None:
+                await push_reply_keyboard(target, bottom_keyboard)
             return target
         except TelegramBadRequest:
             pass
@@ -113,9 +115,22 @@ async def show_screen(
             except TelegramBadRequest:
                 pass
 
-    sent = await target.answer(
-        text, reply_markup=reply_markup, disable_web_page_preview=True
-    )
+    if bottom_keyboard is not None:
+        # Reply keyboard must live on a message we keep; then attach inline via edit.
+        sent = await target.answer(
+            text, reply_markup=bottom_keyboard, disable_web_page_preview=True
+        )
+        if reply_markup is not None:
+            try:
+                await sent.edit_text(
+                    text, reply_markup=reply_markup, disable_web_page_preview=True
+                )
+            except TelegramBadRequest:
+                pass
+    else:
+        sent = await target.answer(
+            text, reply_markup=reply_markup, disable_web_page_preview=True
+        )
     await remember_ui_message(session, user, sent)
     return sent
 
