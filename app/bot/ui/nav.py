@@ -69,8 +69,8 @@ async def push_reply_keyboard(message: Message, reply_markup: ReplyKeyboardMarku
 
 
 def _safe_screen_text(text: str) -> str:
-    """Telegram rejects blank / whitespace-only message text."""
-    cleaned = (text or "").strip()
+    """Telegram rejects blank / whitespace-only / zero-width-only message text."""
+    cleaned = (text or "").replace("\u200b", "").replace("\ufeff", "").strip()
     return cleaned if cleaned else "🍓"
 
 
